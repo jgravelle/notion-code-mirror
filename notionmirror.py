@@ -74,6 +74,10 @@ async def main_async(args: argparse.Namespace) -> int:
             use_ai_summaries=not args.no_ai_summaries,
             is_local=is_local,
         )
+    except* RuntimeError as eg:
+        for e in eg.exceptions:
+            print(f"Error during indexing: {e}", file=sys.stderr)
+        return 1
     except RuntimeError as e:
         print(f"Error during indexing: {e}", file=sys.stderr)
         return 1
@@ -136,6 +140,10 @@ async def main_async(args: argparse.Namespace) -> int:
             state=existing_state if args.sync else None,
             sync=bool(args.sync and existing_state),
         )
+    except* RuntimeError as eg:
+        for e in eg.exceptions:
+            print(f"Error during Notion write: {e}", file=sys.stderr)
+        return 1
     except RuntimeError as e:
         print(f"Error during Notion write: {e}", file=sys.stderr)
         return 1
