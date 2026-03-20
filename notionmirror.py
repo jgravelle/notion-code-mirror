@@ -18,6 +18,14 @@ import sys
 from pathlib import Path
 
 
+def _unwrap(exc: BaseException) -> str:
+    """Extract a readable message from a plain exception or anyio ExceptionGroup."""
+    if isinstance(exc, BaseExceptionGroup):
+        msgs = [_unwrap(e) for e in exc.exceptions]
+        return " | ".join(msgs)
+    return str(exc)
+
+
 def _check_env() -> list[str]:
     """Return a list of missing required environment variables."""
     missing = []
@@ -74,12 +82,9 @@ async def main_async(args: argparse.Namespace) -> int:
             use_ai_summaries=not args.no_ai_summaries,
             is_local=is_local,
         )
-    except* RuntimeError as eg:
-        for e in eg.exceptions:
-            print(f"Error during indexing: {e}", file=sys.stderr)
-        return 1
-    except RuntimeError as e:
-        print(f"Error during indexing: {e}", file=sys.stderr)
+    except Exception as e:
+        msg = _unwrap(e)
+        print(f"Error during indexing: {msg}", file=sys.stderr)
         return 1
 
     print(f"\n   ✓ Repo: {data.repo_key}")
@@ -140,12 +145,9 @@ async def main_async(args: argparse.Namespace) -> int:
             state=existing_state if args.sync else None,
             sync=bool(args.sync and existing_state),
         )
-    except* RuntimeError as eg:
-        for e in eg.exceptions:
-            print(f"Error during Notion write: {e}", file=sys.stderr)
-        return 1
-    except RuntimeError as e:
-        print(f"Error during Notion write: {e}", file=sys.stderr)
+    except Exception as e:
+        msg = _unwrap(e)
+        print(f"Error during Notion write: {msg}", file=sys.stderr)
         return 1
 
     # ── Save state ────────────────────────────────────────────────────────────
