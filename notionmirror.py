@@ -138,12 +138,17 @@ async def main_async(args: argparse.Namespace) -> int:
     print(f"\n✍️  Phase 2: Writing Notion workspace...")
     print(f"   Parent page: {args.notion_parent_id}")
 
+    def _save_early(s: dict) -> None:
+        save_state(data.repo_key, s)
+        print(f"  State saved (workspace IDs persisted)")
+
     try:
         new_state = await run_phase2(
             data=data,
             parent_id=args.notion_parent_id,
             state=existing_state if args.sync else None,
             sync=bool(args.sync and existing_state),
+            on_state_ready=_save_early,
         )
     except Exception as e:
         msg = _unwrap(e)

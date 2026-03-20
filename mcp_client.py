@@ -85,7 +85,7 @@ async def notion_mcp_session() -> AsyncGenerator[MCPSession, None]:
     params = StdioServerParameters(
         command=npx,
         args=["-y", "@notionhq/notion-mcp-server"],
-        env={**os.environ, "NOTION_API_KEY": notion_key},
+        env={**os.environ, "NOTION_API_KEY": notion_key, "NOTION_TOKEN": notion_key},
     )
 
     async with stdio_client(params) as (read, write):

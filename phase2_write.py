@@ -549,6 +549,7 @@ async def run_phase2(
     parent_id: str,
     state: Optional[dict],
     sync: bool,
+    on_state_ready=None,  # callback(state_dict) invoked before slow DB batch
 ) -> dict:
     """Run the Claude agent loop and return the saved state dict."""
     api_key = os.environ.get("NOTION_API_KEY", "")
@@ -669,12 +670,25 @@ async def run_phase2(
             if done_result is None:
                 raise RuntimeError("Agent loop ended without `done`. Check Claude output.")
 
+            # Build state now so caller can persist it before the slow DB batch
+            state_out = {
+                "git_head":              data.git_head,
+                "notion_root_page_id":   done_result.get("root_page_id", ""),
+                "overview_page_id":      done_result.get("overview_page_id", ""),
+                "architecture_page_id":  done_result.get("architecture_page_id", ""),
+                "api_db_id":             done_result.get("api_db_id", ""),
+                "module_page_ids":       done_result.get("module_page_ids", {}),
+                "transport":             "mcp" if notion.using_mcp else "http",
+            }
+            if on_state_ready:
+                on_state_ready(state_out)
+
             # ── Batch-populate API Reference DB ───────────────────────────────
             api_db_id = done_result.get("api_db_id", "")
             if api_db_id and data.all_symbols:
                 print(f"  Populating API Reference ({len(data.all_symbols)} symbols via "
                       f"{'MCP' if notion.using_mcp else 'HTTP'})...")
-                for sym in data.all_symbols:
+                for i, sym in enumerate(data.all_symbols, 1):
                     try:
                         await notion.add_db_row(
                             database_id=api_db_id,
@@ -684,6 +698,8 @@ async def run_phase2(
                             signature=sym.get("signature", ""),
                             summary=sym.get("summary", ""),
                         )
+                        if i % 10 == 0:
+                            print(f"    {i}/{len(data.all_symbols)} rows...")
                         await asyncio.sleep(0.4)
                     except Exception as e:
                         print(f"    Warning: skipped {sym.get('name', '?')}: {e}")
@@ -695,12 +711,4 @@ async def run_phase2(
             except Exception:
                 pass
 
-    return {
-        "git_head":              data.git_head,
-        "notion_root_page_id":   done_result.get("root_page_id", ""),
-        "overview_page_id":      done_result.get("overview_page_id", ""),
-        "architecture_page_id":  done_result.get("architecture_page_id", ""),
-        "api_db_id":             done_result.get("api_db_id", ""),
-        "module_page_ids":       done_result.get("module_page_ids", {}),
-        "transport":             "mcp" if (mcp_session is not None) else "http",
-    }
+    return state_out
