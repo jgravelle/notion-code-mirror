@@ -90,28 +90,42 @@ GitHub repo
 
 ## Quick start
 
-**Prerequisites:** Python 3.10+, a Notion integration token, an Anthropic API key, and `jcodemunch-mcp` installed.
+### Step 1 — Create a Notion integration (one-time)
+
+Notion's API requires a dedicated integration bot — sharing a page with your Google account does nothing here.
+
+1. Go to **[notion.so/my-integrations](https://www.notion.so/my-integrations)** → **New integration**
+2. Give it a name, pick your workspace, click **Save**
+3. Copy the **Internal Integration Secret** — it starts with `ntn_` (older tokens start with `secret_`). This is your `NOTION_API_KEY`.
+
+### Step 2 — Connect the integration to a page
+
+This is the step that trips everyone up. The **Share** button is for inviting people. Integrations use a different menu.
+
+1. Open (or create) a blank Notion page to use as the workspace root
+2. Click the **`···`** menu at the top-right of the page
+3. Click **Connections** → **Connect to** → find your integration by name → click it
+4. Copy the page ID from the URL — it's the 32-character hex string at the end: `notion.so/My-Page-`**`307752802a7f802f864adfcd9d737406`**
+
+> **Note:** "Anyone with link" access and personal sharing do not grant API access. Only the Connections step above does.
+
+### Step 3 — Install and run
 
 ```bash
-# 1. Clone and install dependencies
 git clone https://github.com/jgravelle/notion-code-mirror
 cd notion-code-mirror
 pip install -r requirements.txt
-pip install jcodemunch-mcp   # the code analysis MCP server
+pip install jcodemunch-mcp
 
-# 2. Set environment variables
 export ANTHROPIC_API_KEY=sk-ant-...
-export NOTION_API_KEY=secret_...
-export GITHUB_TOKEN=ghp_...      # optional, raises rate limit to 5000 req/hr
+export NOTION_API_KEY=ntn_...
+export GITHUB_TOKEN=ghp_...     # optional but recommended — avoids GitHub rate limits
 
-# 3. Run it
 python notionmirror.py https://github.com/you/your-repo \
-  --notion-parent-id <your-notion-page-id>
+  --notion-parent-id <page-id-from-step-2>
 ```
 
-**Getting your Notion page ID:** Open any Notion page, click "Share" → "Copy link". The ID is the last segment of the URL (32 hex characters, with or without hyphens).
-
-**Setting up a Notion integration:** Go to [notion.so/my-integrations](https://www.notion.so/my-integrations), create an integration, copy the token, and share your target page with the integration.
+On Windows, use `set` instead of `export`.
 
 ---
 
