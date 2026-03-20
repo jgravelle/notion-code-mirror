@@ -31,14 +31,17 @@ from phase1_gather import RepoData
 # Ordered candidate lists: first exact match wins, then fuzzy fallback below.
 _TOOL_CANDIDATES: dict[str, list[str]] = {
     "create_page":     ["API-post-page", "create-a-page", "notion_create_page",
-                        "createPage", "post-page", "pages-create"],
+                        "createPage", "post-page", "pages-create", "notion-create-page"],
     "update_page":     ["API-patch-page-page_id", "update-page", "notion_update_page",
-                        "updatePage", "patch-page", "pages-update"],
+                        "updatePage", "patch-page", "pages-update", "notion-update-page"],
     "create_database": ["API-post-database", "create-a-database", "notion_create_database",
-                        "createDatabase", "post-database", "databases-create"],
+                        "createDatabase", "post-database", "databases-create",
+                        "notion-create-database", "notion_databases_create",
+                        "databases_create", "database-create", "create-database"],
     "append_blocks":   ["API-patch-block-block_id-children", "append-block-children",
                         "notion_append_block_children", "appendBlockChildren",
-                        "patch-block-children", "blocks-children-append"],
+                        "patch-block-children", "blocks-children-append",
+                        "notion-append-block-children", "blocks_append_children"],
 }
 
 _FUZZY_KEYWORDS: dict[str, tuple[set[str], set[str]]] = {
@@ -85,14 +88,16 @@ class NotionMCPClient:
         self._tools: dict[str, str] = {}
 
     async def setup(self) -> bool:
-        """Discover tools. Returns True if all required roles are mapped."""
+        """Discover tools. Returns True if create_page is mapped (minimum viable)."""
         try:
             names = await self._s.list_tools()
             self._tools = _discover_notion_tools(names)
             mapped = list(self._tools.keys())
             print(f"    Notion MCP: {len(names)} tools available, mapped: {mapped}")
-            required = {"create_page", "create_database", "append_blocks"}
-            return required.issubset(self._tools)
+            if not mapped:
+                print(f"    Available tool names: {names}")
+            # create_page is the hard requirement; create_database falls back gracefully
+            return "create_page" in self._tools
         except Exception as e:
             print(f"    Notion MCP tool discovery failed: {e}")
             return False
@@ -152,7 +157,9 @@ class NotionMCPClient:
         properties: dict,
         icon_emoji: str = "🗄️",
     ) -> str:
-        tool = self._tools["create_database"]
+        tool = self._tools.get("create_database")
+        if not tool:
+            raise KeyError("create_database tool not mapped — will fall back to HTTP")
         result = await self._s.call(
             tool,
             parent={"page_id": parent_page_id},
@@ -239,6 +246,14 @@ class NotionHTTPClient:
     async def _post(self, path: str, body: dict) -> dict:
         assert self._client
         r = await self._client.post(f"{NOTION_API_BASE}{path}", json=body)
+        if r.status_code == 404:
+            raise RuntimeError(
+                "Notion API 404 — the parent page was not found or your integration "
+                "doesn't have access to it.\n"
+                "Fix: open the page in Notion → Share → invite your integration."
+            )
+        if r.status_code == 401:
+            raise RuntimeError("Notion API 401 — NOTION_API_KEY is invalid or expired.")
         r.raise_for_status()
         return r.json()
 
@@ -320,18 +335,20 @@ class NotionClient:
         self.using_mcp = False
 
     async def __aenter__(self):
+        # Always open the HTTP client as safety net
+        self._http = NotionHTTPClient(self._api_key)
+        await self._http.__aenter__()
+
         if self._mcp_session:
             candidate = NotionMCPClient(self._mcp_session)
             if await candidate.setup():
                 self._mcp = candidate
                 self.using_mcp = True
-                print("    Transport: Notion MCP ✓")
+                print("    Transport: Notion MCP ✓ (HTTP on standby)")
             else:
-                print("    Transport: Notion MCP unavailable — falling back to HTTP")
+                print("    Transport: Notion MCP partial — using HTTP")
 
         if not self.using_mcp:
-            self._http = NotionHTTPClient(self._api_key)
-            await self._http.__aenter__()
             print("    Transport: Notion HTTP")
 
         return self
@@ -340,23 +357,32 @@ class NotionClient:
         if self._http:
             await self._http.__aexit__(*args)
 
-    def _backend(self):
+    def _primary(self):
         return self._mcp if self.using_mcp else self._http
 
+    async def _with_fallback(self, method: str, *args, **kwargs):
+        """Try MCP first; fall back to HTTP on any error."""
+        if self.using_mcp:
+            try:
+                return await getattr(self._mcp, method)(*args, **kwargs)
+            except Exception as e:
+                print(f"    MCP {method} failed ({e}), retrying via HTTP")
+        return await getattr(self._http, method)(*args, **kwargs)
+
     async def create_page(self, parent_id, parent_type, title, blocks, icon_emoji="📄") -> str:
-        return await self._backend().create_page(parent_id, parent_type, title, blocks, icon_emoji)
+        return await self._with_fallback("create_page", parent_id, parent_type, title, blocks, icon_emoji)
 
     async def append_blocks(self, block_id, blocks) -> None:
-        return await self._backend().append_blocks(block_id, blocks)
+        return await self._with_fallback("append_blocks", block_id, blocks)
 
     async def create_database(self, parent_page_id, title, properties, icon_emoji="🗄️") -> str:
-        return await self._backend().create_database(parent_page_id, title, properties, icon_emoji)
+        return await self._with_fallback("create_database", parent_page_id, title, properties, icon_emoji)
 
     async def update_page(self, page_id, title=None, blocks=None) -> None:
-        return await self._backend().update_page(page_id, title=title, blocks=blocks)
+        return await self._with_fallback("update_page", page_id, title=title, blocks=blocks)
 
     async def add_db_row(self, database_id, name, kind, file, signature, summary) -> str:
-        return await self._backend().add_db_row(database_id, name, kind, file, signature, summary)
+        return await self._with_fallback("add_db_row", database_id, name, kind, file, signature, summary)
 
 
 # ── Tool definitions for Claude ───────────────────────────────────────────────
