@@ -11,15 +11,65 @@ def truncate_rich(text: str, max_len: int = 1990) -> str:
     return text[: max_len - 1] + "\u2026"
 
 
-def _rich_text(text: str) -> list[dict]:
-    return [{"type": "text", "text": {"content": truncate_rich(str(text))}}]
+# ── Inline markdown → Notion rich_text ───────────────────────────────────────
 
+# Matches (in priority order): inline code, bold+italic, bold, italic, plain text.
+# Underscore variants (_italic_, __bold__) are intentionally omitted —
+# they cause false positives on snake_case and __dunder__ identifiers.
+_INLINE_RE = re.compile(
+    r"(`[^`]+`"           # `code`
+    r"|\*\*\*[^*]+\*\*\*" # ***bold italic***
+    r"|\*\*[^*]+\*\*"     # **bold**
+    r"|\*[^*\n]+\*"       # *italic*
+    r"|[^`*]+)"           # plain text (including underscores)
+)
+
+
+def _parse_inline(text: str) -> list[dict]:
+    """Convert inline markdown to a Notion rich_text array with annotations."""
+    parts: list[dict] = []
+    for m in _INLINE_RE.finditer(str(text)):
+        seg = m.group(0)
+        if not seg:
+            continue
+
+        annotations: dict = {}
+        content = seg
+
+        if seg.startswith("`") and seg.endswith("`") and len(seg) > 1:
+            content = seg[1:-1]
+            annotations["code"] = True
+        elif seg.startswith("***") and seg.endswith("***") and len(seg) > 5:
+            content = seg[3:-3]
+            annotations["bold"] = True
+            annotations["italic"] = True
+        elif seg.startswith("**") and seg.endswith("**") and len(seg) > 3:
+            content = seg[2:-2]
+            annotations["bold"] = True
+        elif seg.startswith("*") and seg.endswith("*") and len(seg) > 1:
+            content = seg[1:-1]
+            annotations["italic"] = True
+
+        entry: dict = {"type": "text", "text": {"content": truncate_rich(content)}}
+        if annotations:
+            entry["annotations"] = annotations
+        parts.append(entry)
+
+    return parts or [{"type": "text", "text": {"content": ""}}]
+
+
+def _rich_text(text: str) -> list[dict]:
+    """Backwards-compatible wrapper: parse inline markdown into rich_text."""
+    return _parse_inline(text)
+
+
+# ── Block builders ────────────────────────────────────────────────────────────
 
 def paragraph_block(text: str) -> dict:
     return {
         "object": "block",
         "type": "paragraph",
-        "paragraph": {"rich_text": _rich_text(text)},
+        "paragraph": {"rich_text": _parse_inline(text)},
     }
 
 
@@ -28,7 +78,7 @@ def heading_block(text: str, level: int = 2) -> dict:
     return {
         "object": "block",
         "type": t,
-        t: {"rich_text": _rich_text(text)},
+        t: {"rich_text": _parse_inline(text)},
     }
 
 
@@ -36,12 +86,11 @@ def bullet_block(text: str) -> dict:
     return {
         "object": "block",
         "type": "bulleted_list_item",
-        "bulleted_list_item": {"rich_text": _rich_text(text)},
+        "bulleted_list_item": {"rich_text": _parse_inline(text)},
     }
 
 
 def code_block(code: str, language: str = "plain text") -> dict:
-    # Notion code blocks are limited to 2000 chars
     NOTION_CODE_LANGS = {
         "python", "javascript", "typescript", "go", "rust", "java", "c", "c++",
         "c#", "ruby", "php", "swift", "kotlin", "bash", "shell", "sql", "html",
@@ -54,7 +103,7 @@ def code_block(code: str, language: str = "plain text") -> dict:
         "object": "block",
         "type": "code",
         "code": {
-            "rich_text": _rich_text(truncate_rich(code, 1990)),
+            "rich_text": [{"type": "text", "text": {"content": truncate_rich(code, 1990)}}],
             "language": lang,
         },
     }
@@ -69,18 +118,65 @@ def callout_block(text: str, emoji: str = "💡") -> dict:
         "object": "block",
         "type": "callout",
         "callout": {
-            "rich_text": _rich_text(text),
+            "rich_text": _parse_inline(text),
             "icon": {"type": "emoji", "emoji": emoji},
         },
     }
 
 
-def md_to_blocks(md: str) -> list[dict]:
-    """Minimal Markdown → Notion blocks converter.
+# ── Table handling ────────────────────────────────────────────────────────────
 
-    Handles: h1/h2/h3, bullet lists, numbered lists,
-    fenced code blocks, and paragraphs.
-    Does NOT handle: inline bold/italic, tables, nested lists.
+def _is_table_row(line: str) -> bool:
+    s = line.strip()
+    return s.startswith("|") and s.endswith("|") and len(s) > 2
+
+
+def _is_separator_row(line: str) -> bool:
+    """Matches |---|---|---| divider rows."""
+    return bool(re.match(r"^\|[\s\-:|]+\|$", line.strip()))
+
+
+def _parse_table_row(line: str) -> list[str]:
+    """Split a markdown table row into cell strings."""
+    s = line.strip().strip("|")
+    return [cell.strip() for cell in s.split("|")]
+
+
+def _table_to_blocks(table_lines: list[str]) -> list[dict]:
+    """Convert a markdown table to Notion blocks.
+
+    Header row → heading_3 with column names joined by ' | '
+    Data rows  → bullet blocks, one per row
+    """
+    blocks: list[dict] = []
+    rows = [r for r in table_lines if not _is_separator_row(r) and _is_table_row(r)]
+    if not rows:
+        return blocks
+
+    # First row is the header
+    headers = _parse_table_row(rows[0])
+    blocks.append(heading_block(" | ".join(headers), 3))
+
+    for row_line in rows[1:]:
+        cells = _parse_table_row(row_line)
+        # Pair each cell with its header: "Header: value  |  Header2: value2"
+        pairs = []
+        for h, c in zip(headers, cells):
+            if c:
+                pairs.append(f"{h}: {c}" if h else c)
+        if pairs:
+            blocks.append(bullet_block("  |  ".join(pairs)))
+
+    return blocks
+
+
+# ── Main converter ────────────────────────────────────────────────────────────
+
+def md_to_blocks(md: str) -> list[dict]:
+    """Markdown → Notion blocks.
+
+    Handles: h1/h2/h3, bullet/numbered lists, fenced code,
+    inline bold/italic/code, markdown tables, paragraphs.
     """
     blocks: list[dict] = []
     lines = md.split("\n")
@@ -98,9 +194,8 @@ def md_to_blocks(md: str) -> list[dict]:
             while i < len(lines) and not lines[i].strip().startswith("```"):
                 code_lines.append(lines[i])
                 i += 1
-            code = "\n".join(code_lines)
-            blocks.append(code_block(code, lang or "plain text"))
-            i += 1  # skip closing ```
+            blocks.append(code_block("\n".join(code_lines), lang or "plain text"))
+            i += 1
             continue
 
         # Headings
@@ -117,7 +212,16 @@ def md_to_blocks(md: str) -> list[dict]:
             i += 1
             continue
 
-        # Bullet list items
+        # Markdown table — collect all consecutive table rows
+        if _is_table_row(stripped):
+            table_lines = []
+            while i < len(lines) and (_is_table_row(lines[i].strip()) or _is_separator_row(lines[i].strip())):
+                table_lines.append(lines[i])
+                i += 1
+            blocks.extend(_table_to_blocks(table_lines))
+            continue
+
+        # Bullets
         if stripped.startswith("- ") or stripped.startswith("* "):
             blocks.append(bullet_block(stripped[2:]))
             i += 1
@@ -145,22 +249,22 @@ def md_to_blocks(md: str) -> list[dict]:
         para_lines = [stripped]
         i += 1
         while i < len(lines):
-            next_stripped = lines[i].strip()
+            ns = lines[i].strip()
             if (
-                not next_stripped
-                or next_stripped.startswith("#")
-                or next_stripped.startswith("- ")
-                or next_stripped.startswith("* ")
-                or next_stripped.startswith("```")
-                or next_stripped in ("---", "***", "___")
-                or re.match(r"^\d+\.\s+", next_stripped)
+                not ns
+                or ns.startswith("#")
+                or ns.startswith("- ")
+                or ns.startswith("* ")
+                or ns.startswith("```")
+                or _is_table_row(ns)
+                or ns in ("---", "***", "___")
+                or re.match(r"^\d+\.\s+", ns)
             ):
                 break
-            para_lines.append(next_stripped)
+            para_lines.append(ns)
             i += 1
 
-        para_text = " ".join(para_lines)
-        blocks.append(paragraph_block(para_text))
+        blocks.append(paragraph_block(" ".join(para_lines)))
 
     return blocks
 

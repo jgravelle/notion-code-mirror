@@ -14,6 +14,7 @@ from notion_blocks import (
     paragraph_block,
     truncate_rich,
     bullet_block,
+    _parse_inline,
 )
 
 
@@ -227,3 +228,145 @@ def test_md_empty_string():
 
 def test_md_only_blank_lines():
     assert md_to_blocks("\n\n\n") == []
+
+
+# ── _parse_inline (inline markdown annotations) ───────────────────────────────
+
+def test_inline_plain():
+    parts = _parse_inline("hello world")
+    assert len(parts) == 1
+    assert parts[0]["text"]["content"] == "hello world"
+    assert "annotations" not in parts[0]
+
+
+def test_inline_bold():
+    parts = _parse_inline("**bold**")
+    assert any(p.get("annotations", {}).get("bold") for p in parts)
+    content = "".join(p["text"]["content"] for p in parts)
+    assert "bold" in content
+    assert "**" not in content
+
+
+def test_inline_italic():
+    parts = _parse_inline("*italic*")
+    assert any(p.get("annotations", {}).get("italic") for p in parts)
+    content = "".join(p["text"]["content"] for p in parts)
+    assert "*" not in content
+
+
+def test_inline_code():
+    parts = _parse_inline("`code`")
+    assert any(p.get("annotations", {}).get("code") for p in parts)
+    content = "".join(p["text"]["content"] for p in parts)
+    assert "code" in content
+    assert "`" not in content
+
+
+def test_inline_bold_italic():
+    parts = _parse_inline("***bolditalic***")
+    ann = next((p.get("annotations", {}) for p in parts if p["text"]["content"]), {})
+    assert ann.get("bold") and ann.get("italic")
+
+
+def test_inline_mixed():
+    parts = _parse_inline("plain **bold** and `code` end")
+    contents = [p["text"]["content"] for p in parts]
+    annotations = [p.get("annotations", {}) for p in parts]
+    assert "plain " in contents or any("plain" in c for c in contents)
+    assert any(a.get("bold") for a in annotations)
+    assert any(a.get("code") for a in annotations)
+    # No raw markers
+    full = "".join(contents)
+    assert "**" not in full
+    assert "`" not in full
+
+
+def test_inline_empty():
+    parts = _parse_inline("")
+    assert parts  # returns at least one entry
+
+
+# ── Markdown table → blocks ───────────────────────────────────────────────────
+
+def test_md_table_basic():
+    md = "| Name | Kind | File |\n|---|---|---|\n| foo | function | bar.py |"
+    blocks = md_to_blocks(md)
+    # Header row → heading_3
+    assert blocks[0]["type"] == "heading_3"
+    # Data row → bullet
+    assert blocks[1]["type"] == "bulleted_list_item"
+
+
+def test_md_table_header_content():
+    md = "| Class | Role |\n|---|---|\n| Foo | Does things |"
+    blocks = md_to_blocks(md)
+    header_text = "".join(
+        p["text"]["content"]
+        for p in blocks[0]["heading_3"]["rich_text"]
+    )
+    assert "Class" in header_text
+    assert "Role" in header_text
+
+
+def test_md_table_data_row_content():
+    md = "| Name | File |\n|---|---|\n| my_func | utils.py |"
+    blocks = md_to_blocks(md)
+    row_text = "".join(
+        p["text"]["content"]
+        for p in blocks[1]["bulleted_list_item"]["rich_text"]
+    )
+    assert "my_func" in row_text
+    assert "utils.py" in row_text
+
+
+def test_md_table_separator_not_a_block():
+    md = "| A | B |\n|---|---|\n| 1 | 2 |"
+    blocks = md_to_blocks(md)
+    # Only header + 1 data row = 2 blocks (separator row skipped)
+    assert len(blocks) == 2
+
+
+def test_md_table_multiple_rows():
+    md = "| A |\n|---|\n| r1 |\n| r2 |\n| r3 |"
+    blocks = md_to_blocks(md)
+    assert len(blocks) == 4  # header + 3 rows
+
+
+def test_md_mixed_with_table():
+    md = "## Section\n\n| Col1 | Col2 |\n|---|---|\n| a | b |\n\nSome text."
+    blocks = md_to_blocks(md)
+    types = [b["type"] for b in blocks]
+    assert "heading_2" in types
+    assert "heading_3" in types
+    assert "bulleted_list_item" in types
+    assert "paragraph" in types
+
+
+# ── Inline annotations in block builders ─────────────────────────────────────
+
+def test_bullet_block_renders_bold():
+    b = bullet_block("**important** item")
+    rt = b["bulleted_list_item"]["rich_text"]
+    assert any(p.get("annotations", {}).get("bold") for p in rt)
+
+
+def test_paragraph_block_renders_code():
+    b = paragraph_block("call `foo()` here")
+    rt = b["paragraph"]["rich_text"]
+    assert any(p.get("annotations", {}).get("code") for p in rt)
+
+
+def test_heading_block_renders_italic():
+    b = heading_block("*Italic* Title", 2)
+    rt = b["heading_2"]["rich_text"]
+    assert any(p.get("annotations", {}).get("italic") for p in rt)
+
+
+def test_inline_snake_case_unchanged():
+    """snake_case and __dunder__ identifiers must not be mangled."""
+    parts = _parse_inline("call my_func() and __init__ here")
+    full = "".join(p["text"]["content"] for p in parts)
+    assert "my_func" in full
+    assert "__init__" in full
+    assert not any(p.get("annotations", {}).get("italic") for p in parts)
+    assert not any(p.get("annotations", {}).get("bold") for p in parts)
