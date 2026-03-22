@@ -102,14 +102,14 @@ async def gather(
             )
             dir_trees[dirname] = tree
 
-        # ── Step 5: All symbols sorted by centrality (max 100) ────────────────
-        # Note: search_symbols clamps max_results to 100 internally
+        # ── Step 5: All symbols sorted by centrality ──────────────────────────
+        # token_budget overrides max_results (which is clamped to 100 internally)
         print("  [5/8] Searching all symbols by centrality...")
         sym_result = await mcp.call(
             "search_symbols",
             repo=repo_key,
             query="",
-            max_results=100,
+            token_budget=20_000,
             detail_level="standard",
         )
         all_symbols: list = sym_result.get("results", [])
